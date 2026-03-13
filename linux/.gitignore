@@ -1,9 +1,25 @@
+# Flutter
 flutter/ephemeral
-lib/widget/exclude.dart
-assets/
-
 .dart_tool/
 .flutter-plugins
 .flutter-plugins-dependencies
 build/
 *.iml
+
+# Your custom excludes
+lib/widget/exclude.dart
+assets/
+
+# Android
+android/.gradle/
+android/local.properties
+android/key.properties
+
+# iOS
+ios/Pods/
+ios/.symlinks/
+
+# IDE
+.idea/
+.vscode/
+*.log
