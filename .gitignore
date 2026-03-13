@@ -15,6 +15,9 @@ migrate_working_dir/
 #asset
 assets/
 
+#dart
+lib/widget/exclude.dart
+
 # IntelliJ related
 *.iml
 *.ipr
