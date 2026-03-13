@@ -1,0 +1,201 @@
+// lib/services/background_service.dart
+import 'package:flutter/foundation.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../database/route_database.dart';
+import '../database/contacts_database.dart';
+import 'route_detection_service.dart';
+
+@pragma('vm:entry-point')
+void startCallback() {
+  FlutterForegroundTask.setTaskHandler(BantayTaskHandler());
+}
+
+class BantayTaskHandler extends TaskHandler {
+  final RouteDetectionService _routeDetection = RouteDetectionService();
+  int _offRouteCount = 0;
+  bool _emergencySent = false;
+  int _updatesSent = 0;
+  String? _offRouteSince;
+
+  static const int offRouteThreshold = 2;
+  static const double routeTolerance = 100.0;
+
+  @override
+  Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
+    debugPrint('BantayTaskHandler started');
+    _offRouteCount = 0;
+    _emergencySent = false;
+  }
+
+  @override
+  Future<void> onRepeatEvent(DateTime timestamp) async {
+    final prefs = await SharedPreferences.getInstance();
+    final isEnabled = prefs.getBool('monitoring_enabled') ?? false;
+
+    if (!isEnabled) return;
+    await _checkLocation();
+  }
+
+  @override
+  Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {
+    debugPrint('BantayTaskHandler destroyed, timeout: $isTimeout');
+  }
+
+  @override
+  void onReceiveData(Object data) {
+    if (data == 'stop') FlutterForegroundTask.stopService();
+  }
+
+  Future<void> _checkLocation() async {
+    try {
+      final routes = await RouteDatabase.instance.getAllRoutes();
+
+      if (routes.isEmpty) {
+        await FlutterForegroundTask.updateService(
+          notificationTitle: 'Bantay Active',
+          notificationText: 'No routes set — add a safe route',
+        );
+        // ✅ Tell UI about status
+        FlutterForegroundTask.sendDataToMain({
+          'status': 'active',
+          'offRouteCount': 0,
+          'distance': 0.0,
+          'updatesSent': 0,
+        });
+        return;
+      }
+
+      Position? position = await Geolocator.getLastKnownPosition();
+      position ??= await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble('last_lat', position.latitude);
+      await prefs.setDouble('last_lng', position.longitude);
+
+      final current = LatLng(position.latitude, position.longitude);
+
+      final (isOnRoute, matchedRoute, distance) = _routeDetection
+          .checkIfOnAnyRoute(current, routes, tolerance: routeTolerance);
+
+      if (isOnRoute) {
+        _offRouteCount = 0;
+        _emergencySent = false;
+
+        await FlutterForegroundTask.updateService(
+          notificationTitle: 'Bantay Active ✓',
+          notificationText: 'On safe route: ${matchedRoute?.name ?? ""}',
+        );
+
+        // ✅ Send to UI
+        FlutterForegroundTask.sendDataToMain({
+          'status': 'active',
+          'offRouteCount': 0,
+          'distance': distance,
+          'lat': position.latitude,
+          'lng': position.longitude,
+          'routeName': matchedRoute?.name ?? '',
+          'updatesSent': 0,
+          'lastCheckTime': DateTime.now().toIso8601String(),
+        });
+      } else {
+        _offRouteCount++;
+
+        if (_offRouteCount >= offRouteThreshold && !_emergencySent) {
+          _emergencySent = true;
+
+          await FlutterForegroundTask.updateService(
+            notificationTitle: '⚠️ Bantay Alert',
+            notificationText:
+                'Off safe route! ${distance.toStringAsFixed(0)}m away',
+          );
+
+          await _triggerEmergency(position, distance);
+
+          // ✅ Send emergency status to UI
+          FlutterForegroundTask.sendDataToMain({
+            'status': 'heightenedEmergency',
+            'offRouteCount': _offRouteCount,
+            'distance': distance,
+            'lat': position.latitude,
+            'lng': position.longitude,
+            'updatesSent': _updatesSent,
+            'lastCheckTime': DateTime.now().toIso8601String(),
+            'offRouteSince': _offRouteSince ?? DateTime.now().toIso8601String(),
+          });
+        } else if (!_emergencySent) {
+          await FlutterForegroundTask.updateService(
+            notificationTitle: 'Bantay Warning',
+            notificationText:
+                'Possible deviation ($_offRouteCount/$offRouteThreshold)',
+          );
+
+          // ✅ Send warning status to UI
+          FlutterForegroundTask.sendDataToMain({
+            'status': 'offRoute',
+            'offRouteCount': _offRouteCount,
+            'distance': distance,
+            'lat': position.latitude,
+            'lng': position.longitude,
+            'updatesSent': 0,
+            'lastCheckTime': DateTime.now().toIso8601String(),
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Background check error: $e');
+    }
+  }
+
+  Future<void> _triggerEmergency(Position position, double distance) async {
+    // In BantayTaskHandler when emergency triggers
+    // FlutterForegroundTask.sendDataToMain({
+    //   'status': 'offRoute',
+    //   'distance': distance,
+    // });
+
+    try {
+      final contacts = await ContactsDatabase.instance.getAllContacts();
+
+      // ✅ Don't return early — still update notification even with no contacts
+      await FlutterForegroundTask.updateService(
+        notificationTitle: '⚠️ EMERGENCY',
+        notificationText:
+            contacts.isEmpty
+                ? 'Off route! Add emergency contacts!'
+                : 'Alerting ${contacts.length} contacts...',
+      );
+
+      if (contacts.isEmpty) {
+        debugPrint('No contacts to alert');
+        return;
+      }
+
+      final lat = position.latitude;
+      final lng = position.longitude;
+      final message =
+          '🚨 BANTAY ALERT: I may be in danger!\n'
+          'I am off my safe route.\n'
+          'My location: https://maps.google.com/?q=$lat,$lng\n'
+          'Please check on me immediately.';
+
+      for (final contact in contacts) {
+        await _sendSMS(contact.phoneNumber, message);
+      }
+
+      debugPrint('Emergency triggered — alerted ${contacts.length} contacts');
+    } catch (e) {
+      debugPrint('Emergency trigger error: $e');
+      _emergencySent = false; // ✅ allow retry only on actual error
+    }
+  }
+
+  Future<void> _sendSMS(String phoneNumber, String message) async {
+    // TODO: replace with telephony package for silent background SMS
+    debugPrint('📱 SMS to $phoneNumber: $message');
+  }
+}

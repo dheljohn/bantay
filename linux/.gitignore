@@ -1,0 +1,9 @@
+flutter/ephemeral
+lib/widget/exclude.dart
+assets/
+
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+build/
+*.iml

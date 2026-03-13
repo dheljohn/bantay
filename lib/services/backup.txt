@@ -1,0 +1,1366 @@
+// // lib/services/background_service.dart
+// import 'package:flutter/foundation.dart';
+// import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+// import 'package:geolocator/geolocator.dart';
+// import 'package:latlong2/latlong.dart';
+// import 'package:shared_preferences/shared_preferences.dart';
+// import '../database/route_database.dart';
+// import '../database/contacts_database.dart';
+// import 'route_detection_service.dart';
+
+// @pragma('vm:entry-point')
+// void startCallback() {
+//   FlutterForegroundTask.setTaskHandler(BantayTaskHandler());
+// }
+
+// class BantayTaskHandler extends TaskHandler {
+//   final RouteDetectionService _routeDetection = RouteDetectionService();
+//   int _offRouteCount = 0;
+//   bool _emergencySent = false;
+
+//   static const int offRouteThreshold = 2;
+//   static const double routeTolerance = 100.0;
+
+//   @override
+//   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
+//     debugPrint('BantayTaskHandler started');
+//     _offRouteCount = 0;
+//     _emergencySent = false;
+//   }
+
+//   @override
+//   Future<void> onRepeatEvent(DateTime timestamp) async {
+//     final prefs = await SharedPreferences.getInstance();
+//     final isEnabled = prefs.getBool('monitoring_enabled') ?? false;
+
+//     if (!isEnabled) return;
+//     await _checkLocation();
+//   }
+
+//   @override
+//   Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {
+//     debugPrint('BantayTaskHandler destroyed, timeout: $isTimeout');
+//   }
+
+//   @override
+//   void onReceiveData(Object data) {
+//     if (data == 'stop') FlutterForegroundTask.stopService();
+//   }
+
+//   Future<void> _checkLocation() async {
+//     try {
+//       final routes = await RouteDatabase.instance.getAllRoutes();
+
+//       if (routes.isEmpty) {
+//         await FlutterForegroundTask.updateService(
+//           notificationTitle: 'Bantay Active',
+//           notificationText: 'No routes set — add a safe route',
+//         );
+//         return;
+//       }
+
+//       Position? position = await Geolocator.getLastKnownPosition();
+//       position ??= await Geolocator.getCurrentPosition(
+//         desiredAccuracy: LocationAccuracy.high,
+//       );
+
+//       // Save last known location for UI to read
+//       final prefs = await SharedPreferences.getInstance();
+//       await prefs.setDouble('last_lat', position.latitude);
+//       await prefs.setDouble('last_lng', position.longitude);
+
+//       final current = LatLng(position.latitude, position.longitude);
+
+//       final (isOnRoute, matchedRoute, distance) = _routeDetection
+//           .checkIfOnAnyRoute(current, routes, tolerance: routeTolerance);
+
+//       if (isOnRoute) {
+//         // Back on route — reset everything
+//         _offRouteCount = 0;
+//         _emergencySent = false;
+//         await FlutterForegroundTask.updateService(
+//           notificationTitle: 'Bantay Active ✓',
+//           notificationText: 'On safe route: ${matchedRoute?.name ?? ""}',
+//         );
+//       } else {
+//         _offRouteCount++;
+//         debugPrint('Off route count: $_offRouteCount/$offRouteThreshold');
+
+//         if (_offRouteCount >= offRouteThreshold && !_emergencySent) {
+//           // Trigger emergency
+//           await FlutterForegroundTask.updateService(
+//             notificationTitle: '⚠️ Bantay Alert',
+//             notificationText:
+//                 'Off safe route! ${distance.toStringAsFixed(0)}m away',
+//           );
+//           _emergencySent = true;
+//           await _triggerEmergency(position, distance);
+//         } else if (_offRouteCount < offRouteThreshold) {
+//           await FlutterForegroundTask.updateService(
+//             notificationTitle: 'Bantay Warning',
+//             notificationText:
+//                 'Possible deviation ($_offRouteCount/$offRouteThreshold)',
+//           );
+//         }
+//       }
+//     } catch (e) {
+//       debugPrint('Background check error: $e');
+//     }
+//   }
+
+//   Future<void> _triggerEmergency(Position position, double distance) async {
+//     // In BantayTaskHandler when emergency triggers
+//     // FlutterForegroundTask.sendDataToMain({
+//     //   'status': 'offRoute',
+//     //   'distance': distance,
+//     // });
+
+//     try {
+//       final contacts = await ContactsDatabase.instance.getAllContacts();
+
+//       // ✅ Don't return early — still update notification even with no contacts
+//       await FlutterForegroundTask.updateService(
+//         notificationTitle: '⚠️ EMERGENCY',
+//         notificationText:
+//             contacts.isEmpty
+//                 ? 'Off route! Add emergency contacts!'
+//                 : 'Alerting ${contacts.length} contacts...',
+//       );
+
+//       if (contacts.isEmpty) {
+//         debugPrint('No contacts to alert');
+//         return;
+//       }
+
+//       final lat = position.latitude;
+//       final lng = position.longitude;
+//       final message =
+//           '🚨 BANTAY ALERT: I may be in danger!\n'
+//           'I am off my safe route.\n'
+//           'My location: https://maps.google.com/?q=$lat,$lng\n'
+//           'Please check on me immediately.';
+
+//       for (final contact in contacts) {
+//         await _sendSMS(contact.phoneNumber, message);
+//       }
+
+//       debugPrint('Emergency triggered — alerted ${contacts.length} contacts');
+//     } catch (e) {
+//       debugPrint('Emergency trigger error: $e');
+//       _emergencySent = false; // ✅ allow retry only on actual error
+//     }
+//   }
+
+//   Future<void> _sendSMS(String phoneNumber, String message) async {
+//     // TODO: replace with telephony package for silent background SMS
+//     debugPrint('📱 SMS to $phoneNumber: $message');
+//   }
+// }
+
+// lib/services/background_service.dart
+
+
+
+
+// lib/services/background_service.dart
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../database/route_database.dart';
+import '../database/contacts_database.dart';
+import '../models/monitoring_state.dart';
+import 'route_detection_service.dart';
+
+@pragma('vm:entry-point')
+void startCallback() {
+  FlutterForegroundTask.setTaskHandler(BantayTaskHandler());
+}
+
+class BantayTaskHandler extends TaskHandler {
+  final RouteDetectionService _routeDetection = RouteDetectionService();
+
+  // State
+  MonitoringStatus _status = MonitoringStatus.active;
+  int _offRouteCount = 0;
+  int _updatesSent = 0;
+  String? _offRouteSince;
+  bool _waitingForResponse = false;
+  DateTime? _alertSentAt;
+
+  static const int offRouteThreshold = 5;
+  static const double routeTolerance = 100.0;
+  static const int responseTimeoutSeconds = 30; // auto emergency if no response
+
+  // ─── Lifecycle ───────────────────────────────────────────────
+
+  @override
+  Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
+    debugPrint('BantayTaskHandler started');
+    await _restoreState();
+  }
+
+  @override
+  Future<void> onRepeatEvent(DateTime timestamp) async {
+    final prefs = await SharedPreferences.getInstance();
+    final isEnabled = prefs.getBool('monitoring_enabled') ?? false;
+    if (!isEnabled) return;
+
+    // Check if waiting for user response and timed out
+    if (_waitingForResponse && _alertSentAt != null) {
+      final elapsed = DateTime.now().difference(_alertSentAt!).inSeconds;
+      if (elapsed >= responseTimeoutSeconds) {
+        debugPrint('No response from user — entering emergency mode');
+        _waitingForResponse = false;
+        await _enterEmergencyMode();
+        return;
+      }
+      // Still waiting — don't do location check yet
+      final remaining = responseTimeoutSeconds - elapsed;
+      await FlutterForegroundTask.updateService(
+        notificationTitle: '⚠️ Are you safe?',
+        notificationText:
+            'Tap "I\'m Safe" or emergency starts in ${remaining}s',
+      );
+      return;
+    }
+
+    await _checkLocation();
+  }
+
+  @override
+  Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {
+    await _saveState();
+    debugPrint('BantayTaskHandler destroyed');
+  }
+
+  // ─── Notification button actions ─────────────────────────────
+
+  @override
+  void onReceiveData(Object data) {
+    final action = data.toString();
+    debugPrint('Received action: $action');
+
+    switch (action) {
+      case 'SAFE':
+        _userConfirmedSafe();
+        break;
+      case 'EMERGENCY':
+        _enterEmergencyMode();
+        break;
+      case 'stop':
+        FlutterForegroundTask.stopService();
+        break;
+    }
+  }
+
+  // ─── Location check ──────────────────────────────────────────
+
+  Future<void> _checkLocation() async {
+    try {
+      final routes = await RouteDatabase.instance.getAllRoutes();
+
+      if (routes.isEmpty) {
+        await FlutterForegroundTask.updateService(
+          notificationTitle: 'Bantay Active',
+          notificationText: 'No routes set — add a safe route',
+        );
+        _sendToUI({'status': 'active', 'offRouteCount': 0});
+        return;
+      }
+
+      Position? position = await Geolocator.getLastKnownPosition();
+      position ??= await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
+      // Save location for UI
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble('last_lat', position.latitude);
+      await prefs.setDouble('last_lng', position.longitude);
+
+      final current = LatLng(position.latitude, position.longitude);
+      final (isOnRoute, matchedRoute, distance) = _routeDetection
+          .checkIfOnAnyRoute(current, routes, tolerance: routeTolerance);
+
+      switch (_status) {
+        case MonitoringStatus.active:
+          await _handleActiveState(isOnRoute, matchedRoute, distance, position);
+          break;
+
+        case MonitoringStatus.heightenedMonitoring:
+        case MonitoringStatus.heightenedEmergency:
+          await _handleHeightenedState(isOnRoute, matchedRoute, position);
+          break;
+
+        default:
+          break;
+      }
+    } catch (e) {
+      debugPrint('Background check error: $e');
+    }
+  }
+
+  // ─── Active state ─────────────────────────────────────────────
+
+  Future<void> _handleActiveState(
+    bool isOnRoute,
+    dynamic matchedRoute,
+    double distance,
+    Position position,
+  ) async {
+    if (isOnRoute) {
+      _offRouteCount = 0;
+      await FlutterForegroundTask.updateService(
+        notificationTitle: 'Bantay Active ✓',
+        notificationText: 'On safe route: ${matchedRoute?.name ?? ""}',
+      );
+      _sendToUI({
+        'status': 'active',
+        'offRouteCount': 0,
+        'lat': position.latitude,
+        'lng': position.longitude,
+        'lastCheckTime': DateTime.now().toIso8601String(),
+      });
+    } else {
+      _offRouteCount++;
+      debugPrint('Off route count: $_offRouteCount/$offRouteThreshold');
+
+      if (_offRouteCount >= offRouteThreshold) {
+        await _triggerOffRouteAlert(distance, position);
+      } else {
+        await FlutterForegroundTask.updateService(
+          notificationTitle: 'Bantay Warning',
+          notificationText:
+              'Possible deviation ($_offRouteCount/$offRouteThreshold)',
+        );
+        _sendToUI({
+          'status': 'offRoute',
+          'offRouteCount': _offRouteCount,
+          'distance': distance,
+          'lat': position.latitude,
+          'lng': position.longitude,
+          'lastCheckTime': DateTime.now().toIso8601String(),
+        });
+      }
+    }
+  }
+
+  // ─── Trigger alert ────────────────────────────────────────────
+
+  Future<void> _triggerOffRouteAlert(double distance, Position position) async {
+    debugPrint('ALERT: User off all safe routes!');
+
+    _status = MonitoringStatus.offRoute;
+    _offRouteSince = DateTime.now().toIso8601String();
+    _waitingForResponse = true;
+    _alertSentAt = DateTime.now();
+
+    await FlutterForegroundTask.updateService(
+      notificationTitle: '⚠️ Off Safe Route!',
+      notificationText:
+          'Tap "I\'m Safe" or emergency activates in ${responseTimeoutSeconds}s',
+    );
+
+    _sendToUI({
+      'status': 'offRoute',
+      'offRouteCount': _offRouteCount,
+      'distance': distance,
+      'lat': position.latitude,
+      'lng': position.longitude,
+      'offRouteSince': _offRouteSince,
+      'lastCheckTime': DateTime.now().toIso8601String(),
+    });
+
+    await _saveState();
+  }
+
+  // ─── User confirmed safe ──────────────────────────────────────
+
+  Future<void> _userConfirmedSafe() async {
+    debugPrint('User confirmed safe — heightened monitoring');
+
+    _status = MonitoringStatus.heightenedMonitoring;
+    _waitingForResponse = false;
+    _offRouteCount = 0;
+
+    await FlutterForegroundTask.updateService(
+      notificationTitle: 'Bantay — Enhanced Monitoring',
+      notificationText: 'Monitoring closely — stay on your safe route',
+    );
+
+    _sendToUI({
+      'status': 'heightenedMonitoring',
+      'offRouteCount': 0,
+      'lastCheckTime': DateTime.now().toIso8601String(),
+    });
+
+    await _saveState();
+  }
+
+  // ─── Emergency mode ───────────────────────────────────────────
+
+  Future<void> _enterEmergencyMode() async {
+    debugPrint('EMERGENCY MODE ACTIVATED');
+
+    _status = MonitoringStatus.heightenedEmergency;
+    _waitingForResponse = false;
+    _updatesSent = 0;
+
+    await FlutterForegroundTask.updateService(
+      notificationTitle: '🚨 EMERGENCY MODE',
+      notificationText: 'Sending location updates to contacts',
+    );
+
+    _sendToUI({
+      'status': 'heightenedEmergency',
+      'offRouteCount': _offRouteCount,
+      'offRouteSince': _offRouteSince,
+      'lastCheckTime': DateTime.now().toIso8601String(),
+    });
+
+    // Send first SMS immediately
+    await _sendEmergencySMS();
+    await _saveState();
+  }
+
+  // ─── Heightened state ─────────────────────────────────────────
+
+  Future<void> _handleHeightenedState(
+    bool isOnRoute,
+    dynamic matchedRoute,
+    Position position,
+  ) async {
+    if (isOnRoute) {
+      await _handleBackOnRoute(matchedRoute, position);
+    } else {
+      // Still off route — send update if in emergency
+      if (_status == MonitoringStatus.heightenedEmergency) {
+        _updatesSent++;
+        await _sendLocationUpdate(position);
+        await FlutterForegroundTask.updateService(
+          notificationTitle: '🚨 EMERGENCY — Update #$_updatesSent',
+          notificationText: 'Sending location to contacts...',
+        );
+        _sendToUI({
+          'status': 'heightenedEmergency',
+          'updatesSent': _updatesSent,
+          'offRouteSince': _offRouteSince,
+          'lastCheckTime': DateTime.now().toIso8601String(),
+        });
+      } else {
+        await FlutterForegroundTask.updateService(
+          notificationTitle: 'Bantay — Enhanced Monitoring',
+          notificationText: 'Still off route — watching closely',
+        );
+      }
+    }
+  }
+
+  // ─── Back on route ────────────────────────────────────────────
+
+  Future<void> _handleBackOnRoute(dynamic route, Position position) async {
+    debugPrint('✅ Back on safe route: ${route?.name}');
+
+    final prevStatus = _status;
+    _status = MonitoringStatus.active;
+    _offRouteCount = 0;
+    _updatesSent = 0;
+    _offRouteSince = null;
+    _waitingForResponse = false;
+
+    await FlutterForegroundTask.updateService(
+      notificationTitle: 'Bantay Active ✓',
+      notificationText: 'Back on safe route: ${route?.name ?? ""}',
+    );
+
+    _sendToUI({
+      'status': 'active',
+      'offRouteCount': 0,
+      'updatesSent': 0,
+      'lat': position.latitude,
+      'lng': position.longitude,
+      'lastCheckTime': DateTime.now().toIso8601String(),
+      'backOnRoute': true,
+      'routeName': route?.name ?? '',
+      'wasEmergency': prevStatus == MonitoringStatus.heightenedEmergency,
+    });
+
+    await _saveState();
+  }
+
+  // ─── SMS ──────────────────────────────────────────────────────
+
+  Future<void> _sendEmergencySMS() async {
+    try {
+      final contacts = await ContactsDatabase.instance.getAllContacts();
+      if (contacts.isEmpty) {
+        debugPrint('No contacts to alert');
+        return;
+      }
+
+      final position = await Geolocator.getLastKnownPosition();
+      final lat = position?.latitude ?? 0;
+      final lng = position?.longitude ?? 0;
+
+      final message =
+          '🚨 BANTAY ALERT: I may be in danger!\n'
+          'I am off my safe route.\n'
+          'My location: https://maps.google.com/?q=$lat,$lng\n'
+          'Please check on me immediately.';
+
+      for (final contact in contacts) {
+        await _sendSMS(contact.phoneNumber, message);
+      }
+
+      debugPrint('Emergency SMS sent to ${contacts.length} contacts');
+    } catch (e) {
+      debugPrint('SMS error: $e');
+    }
+  }
+
+  Future<void> _sendLocationUpdate(Position position) async {
+    try {
+      final contacts = await ContactsDatabase.instance.getAllContacts();
+      if (contacts.isEmpty) return;
+
+      final message =
+          '📍 BANTAY UPDATE #$_updatesSent\n'
+          'Still off my safe route.\n'
+          'Location: https://maps.google.com/?q=${position.latitude},${position.longitude}';
+
+      for (final contact in contacts) {
+        await _sendSMS(contact.phoneNumber, message);
+      }
+    } catch (e) {
+      debugPrint('Location update error: $e');
+    }
+  }
+
+  Future<void> _sendSMS(String phoneNumber, String message) async {
+    // TODO: replace with telephony package
+    debugPrint('📱 SMS to $phoneNumber: $message');
+  }
+
+  // ─── Helpers ──────────────────────────────────────────────────
+
+  void _sendToUI(Map<String, dynamic> data) {
+    debugPrint('Sending data to UI: $data');
+    FlutterForegroundTask.sendDataToMain(data);
+  }
+
+  Future<void> _saveState() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('bg_status', _status.name);
+    await prefs.setInt('bg_off_route_count', _offRouteCount);
+    await prefs.setInt('bg_updates_sent', _updatesSent);
+    await prefs.setBool('bg_waiting_response', _waitingForResponse);
+    if (_offRouteSince != null) {
+      await prefs.setString('bg_off_route_since', _offRouteSince!);
+    }
+    if (_alertSentAt != null) {
+      await prefs.setString(
+        'bg_alert_sent_at',
+        _alertSentAt!.toIso8601String(),
+      );
+    }
+  }
+
+  Future<void> _restoreState() async {
+    final prefs = await SharedPreferences.getInstance();
+    final statusName = prefs.getString('bg_status') ?? 'active';
+    _status = MonitoringStatus.values.firstWhere(
+      (e) => e.name == statusName,
+      orElse: () => MonitoringStatus.active,
+    );
+    _offRouteCount = prefs.getInt('bg_off_route_count') ?? 0;
+    _updatesSent = prefs.getInt('bg_updates_sent') ?? 0;
+    _waitingForResponse = prefs.getBool('bg_waiting_response') ?? false;
+    _offRouteSince = prefs.getString('bg_off_route_since');
+    final alertSentAtStr = prefs.getString('bg_alert_sent_at');
+    if (alertSentAtStr != null) {
+      _alertSentAt = DateTime.tryParse(alertSentAtStr);
+    }
+    debugPrint('Restored state: $_status, offRouteCount: $_offRouteCount');
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import 'dart:async';
+import 'dart:math';
+
+import 'package:bantay/database/route_database.dart';
+import 'package:bantay/provider/map_initializer.dart';
+import 'package:bantay/services/location_service.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
+import 'package:geolocator/geolocator.dart';
+import '../models/saved_route.dart';
+
+import '../services/tile_cache_service.dart';
+
+class DrawRouteScreen extends StatefulWidget {
+  const DrawRouteScreen({super.key});
+
+  @override
+  State<DrawRouteScreen> createState() => _DrawRouteScreenState();
+}
+
+class _DrawRouteScreenState extends State<DrawRouteScreen> {
+  final MapController _mapController = MapController();
+  final TextEditingController _routeNameController = TextEditingController();
+
+  List<LatLng> _routePoints = [];
+  bool _isDrawing = false;
+  LatLng? _userLocation;
+  bool _isLoadingLocation = true;
+
+  // NEW: Offline maps
+  bool _useTileCacheMaps = true;
+  bool _tileCacheEmpty = true;
+  bool _tilesCacheReady = false;
+  bool _isOverZoomed = false;
+  bool _checkingCache = true;
+  final LocationService _locationService = LocationService();
+  StreamSubscription<Position>? _locationSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _getUserLocation();
+    _checkCacheReady();
+    _checkCacheEmpty();
+    _locationService.start();
+
+    _locationSub = _locationService.stream.listen((position) {
+      if (!mounted) return;
+
+      final newLocation = LatLng(position.latitude, position.longitude);
+
+      if (_userLocation == newLocation) return;
+
+      setState(() {
+        _userLocation = newLocation;
+      });
+    });
+  }
+
+  Future<void> _checkCacheEmpty() async {
+    final count = await TileCacheService.getCachedTileCount();
+
+    if (!mounted) return;
+
+    setState(() {
+      _tileCacheEmpty = count == 0;
+      _checkingCache = false;
+      print('isTileCacheEmpty?: $_tileCacheEmpty');
+    });
+  }
+
+  void _checkCacheReady() {
+    _tilesCacheReady = TileCacheService.isReady;
+    debugPrint('isTilesCacheReady?: $_tilesCacheReady');
+  }
+
+  @override
+  void dispose() {
+    _locationSub?.cancel();
+    _mapController.dispose();
+    _routeNameController.dispose();
+    super.dispose();
+  }
+
+  // Get user's current location
+
+  Future<void> _getUserLocation() async {
+    try {
+      final position = await _locationService.getLastPosition();
+
+      if (!mounted) return;
+
+      if (position != null) {
+        setState(() {
+          _userLocation = LatLng(position.latitude, position.longitude);
+          _isLoadingLocation = false;
+        });
+      } else {
+        _showError('Could not get location');
+        setState(() => _isLoadingLocation = false);
+      }
+    } catch (e) {
+      _showError('Error getting location: $e');
+      setState(() => _isLoadingLocation = false);
+    }
+  }
+
+  // Add point when user taps on map
+  void _addPoint(LatLng point) {
+    if (!_isDrawing) return;
+
+    setState(() {
+      _routePoints.add(point);
+    });
+  }
+
+  // Remove last point
+  void _undoLastPoint() {
+    if (_routePoints.isEmpty) return;
+
+    setState(() {
+      _routePoints.removeLast();
+    });
+  }
+
+  // Clear all points
+  void _clearRoute() {
+    setState(() {
+      _routePoints.clear();
+    });
+  }
+
+  // Calculate total distance
+  double _calculateDistance() {
+    if (_routePoints.length < 2) return 0;
+
+    const distance = Distance();
+    double total = 0;
+
+    for (int i = 1; i < _routePoints.length; i++) {
+      total += distance.as(
+        LengthUnit.Meter,
+        _routePoints[i - 1],
+        _routePoints[i],
+      );
+    }
+
+    return total / 1000; // Convert to km
+  }
+
+  // Start drawing mode
+  void _startDrawing() {
+    setState(() {
+      _isDrawing = true;
+      _routePoints.clear();
+    });
+  }
+
+  // Show save dialog
+  void _showSaveDialog() {
+    if (_routePoints.length < 2) {
+      _showError('Add at least 2 points to create a route');
+      return;
+    }
+
+    showDialog(
+      context: context,
+      builder:
+          (context) => AlertDialog(
+            title: const Text('Save Route'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: _routeNameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Route Name',
+                    hintText: 'e.g., Home to Work',
+                    border: OutlineInputBorder(),
+                  ),
+                  autofocus: true,
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Points: ${_routePoints.length}'),
+                      Text(
+                        'Distance: ${_calculateDistance().toStringAsFixed(2)} km',
+                      ),
+                      Text(
+                        'Created: ${DateTime.now().toString().split('.')[0]}',
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  _saveRoute();
+                },
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+                child: const Text('Save'),
+              ),
+            ],
+          ),
+    );
+  }
+
+  // Save route to database
+  Future<void> _saveRoute() async {
+    final routeName = _routeNameController.text.trim();
+
+    if (routeName.isEmpty) {
+      _showError('Please enter a route name');
+      return;
+    }
+
+    if (_routePoints.length < 2) {
+      _showError('Route must have at least 2 points');
+      return;
+    }
+
+    try {
+      final route = SavedRoute(
+        name: routeName,
+        points: _routePoints,
+        distance: _calculateDistance(),
+        createdAt: DateTime.now(),
+      );
+
+      await RouteDatabase.instance.insertRoute(route);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Route saved successfully!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+
+        Navigator.pop(context, true); // Return to previous screen
+      }
+    } catch (e) {
+      _showError('Error saving route: $e');
+    }
+  }
+
+  // Show error message
+  void _showError(String message) {
+    debugPrint('Error: $message');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mapData = MapInitializer.instance;
+    final center = mapData.userPosition ?? const LatLng(14.5995, 120.9842);
+    final hasTiles = mapData.cachedTileCount > 0;
+
+    if (!mapData.hasInternet && !hasTiles) {
+      return Scaffold(
+        body: Center(
+          child: Container(
+            width: 220,
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.wifi_off, size: 40, color: Colors.grey),
+                SizedBox(height: 10),
+                Text(
+                  'Open your WiFi to cache the map',
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Draw Safe Route'),
+        backgroundColor: Colors.green,
+        actions: [
+          IconButton(
+            icon: Icon(_useTileCacheMaps ? Icons.cloud_off : Icons.cloud),
+            onPressed:
+                _tilesCacheReady
+                    ? () {
+                      setState(() => _useTileCacheMaps = !_useTileCacheMaps);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            _useTileCacheMaps
+                                ? 'Using offline maps'
+                                : 'Using online maps',
+                          ),
+                        ),
+                      );
+                    }
+                    : null,
+            tooltip:
+                _useTileCacheMaps ? 'Switch to online' : 'Switch to offline',
+          ),
+          if (_isDrawing && _routePoints.length >= 2)
+            IconButton(
+              icon: const Icon(Icons.check),
+              onPressed: _showSaveDialog,
+              tooltip: 'Save Route',
+            ),
+        ],
+      ),
+      body: SafeArea(
+        child: Stack(
+          children: [
+            if (_tileCacheEmpty && _useTileCacheMaps)
+              const Center(child: Text('No cached tiles')),
+            _isLoadingLocation || _checkingCache
+                ? const Center(child: CircularProgressIndicator())
+                : FlutterMap(
+                  mapController: _mapController,
+                  options: MapOptions(
+                    initialCenter:
+                        _userLocation ?? const LatLng(14.5995, 120.9842),
+                    initialZoom: 13.0,
+
+                    onMapReady: () {
+                      if (_userLocation != null) {
+                        _mapController.move(_userLocation!, 13.0);
+                      }
+                    },
+                    onPositionChanged: (position, hasGesture) {
+                      final zoom = position.zoom;
+                      final overZoom = zoom > 16.5;
+
+                      if (overZoom != _isOverZoomed) {
+                        setState(() => _isOverZoomed = overZoom);
+                      }
+                    },
+                    onTap: (tapPosition, point) => _addPoint(point),
+                  ),
+                  children: [
+                    TileLayer(
+                      urlTemplate: TileCacheService.tileUrl,
+                      userAgentPackageName: 'com.example.bantay',
+
+                      minZoom: 0,
+                      tileProvider:
+                          TileCacheService.isReady
+                              ? TileCacheService.getTileProvider() // cache-first (offline)
+                              : NetworkTileProvider(),
+
+                      // Add rate limiting
+                      errorTileCallback: (tile, error, stackTrace) {
+                        debugPrint('Tile error: $error');
+                      },
+                    ),
+
+                    // Route corridor (wide, semi-transparent)
+                    if (_routePoints.length > 1)
+                      PolylineLayer(
+                        polylines: [
+                          Polyline(
+                            points: _routePoints,
+                            strokeWidth: 30.0,
+                            color: Colors.green.withOpacity(0.3),
+                          ),
+                        ],
+                      ),
+
+                    // Route path (main line)
+                    if (_routePoints.length > 1)
+                      PolylineLayer(
+                        polylines: [
+                          Polyline(
+                            points: _routePoints,
+                            strokeWidth: 5.0,
+                            color: Colors.green,
+                          ),
+                        ],
+                      ),
+
+                    // Route points markers
+                    if (_routePoints.isNotEmpty)
+                      MarkerLayer(
+                        markers:
+                            _routePoints.asMap().entries.map((entry) {
+                              final idx = entry.key;
+                              final point = entry.value;
+
+                              Color markerColor =
+                                  idx == 0
+                                      ? Colors.green
+                                      : idx == _routePoints.length - 1
+                                      ? Colors.red
+                                      : Colors.green.shade300;
+
+                              return Marker(
+                                point: point,
+                                width: 24,
+                                height: 24,
+                                child: GestureDetector(
+                                  onLongPress: () {
+                                    setState(() {
+                                      _routePoints.removeAt(idx);
+                                    });
+                                  },
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      color: markerColor,
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: Colors.white,
+                                        width: 2,
+                                      ),
+                                    ),
+                                    child: Center(
+                                      child: Text(
+                                        idx == 0
+                                            ? 'S'
+                                            : idx == _routePoints.length - 1
+                                            ? 'E'
+                                            : '',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 10,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            }).toList(),
+                      ),
+
+                    // User location marker
+                    if (_userLocation != null)
+                      MarkerLayer(
+                        markers: [
+                          Marker(
+                            point: _userLocation!,
+                            width: 40,
+                            height: 40,
+                            child: const Icon(
+                              Icons.my_location,
+                              color: Colors.blue,
+                              size: 30,
+                            ),
+                          ),
+                        ],
+                      ),
+                  ],
+                ),
+            // Add after the FlutterMap widget in your Stack
+            if (_isOverZoomed)
+              Positioned(
+                bottom: 120,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 10,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.7),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: const [
+                        Icon(Icons.zoom_out, color: Colors.white, size: 18),
+                        SizedBox(width: 8),
+                        Text(
+                          'Cannot zoom in further',
+                          style: TextStyle(color: Colors.white, fontSize: 13),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+
+            // Top info bar
+            if (_useTileCacheMaps)
+              Positioned(
+                top: 10,
+                left: 10,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: _tilesCacheReady ? Colors.green : Colors.orange,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        _tilesCacheReady ? Icons.cloud_off : Icons.downloading,
+                        color: Colors.white,
+                        size: 16,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        _tilesCacheReady ? 'Offline' : 'Loading...',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: Container(
+                color: _isDrawing ? Colors.blue.shade100 : Colors.grey.shade200,
+                padding: const EdgeInsets.all(12),
+                child:
+                    _isDrawing
+                        ? Column(
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  'Points: ${_routePoints.length}',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                Text(
+                                  'Distance: ${_calculateDistance().toStringAsFixed(2)} km',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              _routePoints.length < 2
+                                  ? 'Tap on map to add points'
+                                  : 'Tap ✓ to save route',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey.shade700,
+                              ),
+                            ),
+                          ],
+                        )
+                        : const Text(
+                          'Tap "Start Drawing" to begin',
+                          style: TextStyle(fontSize: 14),
+                        ),
+              ),
+            ),
+
+            // Legend
+            Positioned(
+              top: 80,
+              right: 10,
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(8),
+                  boxShadow: const [
+                    BoxShadow(color: Colors.black26, blurRadius: 4),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _buildLegendItem(Colors.green, 'Start'),
+                    _buildLegendItem(Colors.red, 'End'),
+                    _buildLegendItem(Colors.green.shade300, 'Points'),
+                    _buildLegendItem(Colors.green.withOpacity(0.3), 'Corridor'),
+                  ],
+                ),
+              ),
+            ),
+
+            // Bottom controls
+            if (!_isDrawing)
+              Positioned(
+                bottom: 20,
+                left: 20,
+                right: 20,
+                child: ElevatedButton.icon(
+                  onPressed: _startDrawing,
+                  icon: const Icon(Icons.edit_location),
+                  label: const Text('Start Drawing Route'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                  ),
+                ),
+              ),
+
+            if (_isDrawing)
+              Positioned(
+                bottom: 20,
+                left: 20,
+                right: 20,
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: _routePoints.isEmpty ? null : _undoLastPoint,
+                        icon: const Icon(Icons.undo),
+                        label: const Text('Undo'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.orange,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: _clearRoute,
+                        icon: const Icon(Icons.delete),
+                        label: const Text('Clear'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.red,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+            // Zoom controls
+            Positioned(
+              right: 10,
+              bottom: 100,
+              child: Column(
+                children: [
+                  FloatingActionButton(
+                    mini: true,
+                    heroTag: 'zoom_in',
+                    onPressed: () {
+                      final currentZoom = _mapController.camera.zoom;
+                      _mapController.move(
+                        _mapController.camera.center,
+                        currentZoom + 1,
+                      );
+                    },
+                    child: const Icon(Icons.add),
+                  ),
+                  const SizedBox(height: 8),
+                  FloatingActionButton(
+                    mini: true,
+                    heroTag: 'zoom_out',
+                    onPressed: () {
+                      final currentZoom = _mapController.camera.zoom;
+                      _mapController.move(
+                        _mapController.camera.center,
+                        currentZoom - 1,
+                      );
+                    },
+                    child: const Icon(Icons.remove),
+                  ),
+                  const SizedBox(height: 8),
+                  FloatingActionButton(
+                    mini: true,
+                    heroTag: 'my_location',
+                    onPressed: () async {
+                      if (_userLocation != null) {
+                        _mapController.move(_userLocation!, 15.0);
+                      } else {
+                        await _getUserLocation();
+                      }
+                    },
+                    child: const Icon(Icons.my_location),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLegendItem(Color color, String label) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 16,
+            height: 16,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 1),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(label, style: const TextStyle(fontSize: 11)),
+        ],
+      ),
+    );
+  }
+}
