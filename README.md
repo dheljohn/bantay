@@ -130,21 +130,25 @@ Bantay is designed to work in low-connectivity situations:
 
 ### ✅ ON SAFE ROUTE
 You are traveling along your defined route within the acceptable radius. No alerts are sent.
+
 <img src="https://github.com/user-attachments/assets/23ab8684-8f6f-4951-9cb2-8c0174f8a140" width="300" />
 
 
 
 ### ⚠️ OFF SAFE ROUTE WARNING
 Your position has deviated from the safe route. The app sends a notification asking you to confirm whether you're safe. If you confirm you're safe but remain off-route, the app escalates to Heightened Monitoring.
+
 <img src="https://github.com/user-attachments/assets/0160ff4c-1173-4563-a918-8cea760bdc7f" width="300" />
 
 ### 🔶 HEIGHTENED MONITORING
 Triggered when you confirm safety but remain off-route. Monitoring frequency increases. If you do not respond or indicate you're not safe, the app escalates to Emergency Mode.
+
 <img src="https://github.com/user-attachments/assets/672bc82a-a398-4f81-ac92-293bd77ba936" width="300" />
 
 
 ### 🆘 EMERGENCY MODE
 Activated when you're unresponsive or confirm danger. The app sends **continuous SMS updates with your live location** to all trusted contacts until the situation is resolved.
+
 <img src="https://github.com/user-attachments/assets/91046f22-a2e3-42ea-a546-1f4e68564987" width="300" />
 
 
